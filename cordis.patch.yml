@@ -1,0 +1,14 @@
+# Bundle patch applied over a selected DeepSeek Harness profile.
+- insert:
+    # Registers /fuse, materializes native history, auto-titles it, and inherits the source Workspace group.
+    - id: conversation-fusion
+      name: '@deepseek-ai/dsh-fusion'
+      config:
+        maxSources: 8
+        maxMessages: 500
+        maxFusedBytes: 131072
+        maxMessageBytes: 16384
+        maxTitleBytes: 160
+        allowCrossWorkspace: false
+        enableAgentPlanning: true
+        plannerMaxTokens: 8192
