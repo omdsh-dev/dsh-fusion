@@ -49,7 +49,7 @@
       "platform": "web"
     }
   },
-  "license": "BSD-3-Clause",
+  "license": "MIT",
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1"
   },
