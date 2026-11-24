@@ -1,5 +1,7 @@
 # Bundle patch applied over a selected DeepSeek Harness profile.
 - insert:
+    # Uses Shuttle to read and materialize complete AHP turns when mounted.
+    # Chronological fusion keeps the projected order of each source.
     # Registers /fuse, materializes native history, auto-titles it, and inherits the source Workspace group.
     - id: conversation-fusion
       name: '@deepseek-ai/dsh-fusion'

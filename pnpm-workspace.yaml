@@ -1,7 +1,7 @@
 packages:
   - .
 
-autoInstallPeers: false
+autoInstallPeers: true
 
 allowBuilds:
   esbuild: true

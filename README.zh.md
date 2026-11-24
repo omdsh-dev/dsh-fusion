@@ -7,9 +7,9 @@
 ## 能力
 
 - 融合 2 到 32 个会话，部署默认上限为 8。
-- `chronological` 按事件时间合并；`by-source` 按调用者给出的源顺序分组。
+- `chronological` 按时间穿插各来源，同时保持每个来源的表层顺序。`by-source` 按调用者给出的来源顺序分组，组内沿用表层顺序。
 - 默认按稳定 message id 去除 fork 会话共享的历史前缀，不会把偶然相同的自然语言误判为重复。
-- 只投影 user/assistant 的文本块；忽略 reasoning、tool call 和 tool result。
+- 与 Shuttle 同装时保留完整回合、推理和成对的工具记录。独立安装时融合用户和助手的文本。
 - 继承调用者的 cwd、provider/model 选项和创建时记录的 agent preset。
 - Host 提供 Workspace 注册表时，把新会话自动加入调用者/同 cwd 源会话所在分组。
 - 标题优先采用显式输入，其次采用 Agent 规划标题，最后根据源会话当前标题自动生成。
@@ -26,7 +26,7 @@
 dsh plugin --profile web add /path/to/dsh-fusion
 ```
 
-重启 DSH 进程后，profile 会加载 `@deepseek-ai/dsh-fusion`，界面斜杠菜单中出现 `/fuse`，模型工具目录中出现 `conversation_fuse`。所选 profile 必须提供 `agents`、`commands`、`sessions`、`sessionQuery`、`systemPrompt` 和 `tools` 服务。`@deepseek-ai/dsh-fusion/invariant` 是供带 `invariants` 服务的组合按需挂载的可选入口，不在默认 bundle 中启用。
+重启 DSH 进程后，profile 会加载 `@deepseek-ai/dsh-fusion`，界面斜杠菜单中出现 `/fuse`，模型工具目录中出现 `conversation_fuse`。所选 profile 必须提供 `agents`、`commands`、`sessions`、`sessionQuery`、`systemPrompt` 和 `tools` 服务。
 
 ## 界面操作
 
@@ -63,7 +63,7 @@ dsh plugin --profile web add /path/to/dsh-fusion
 | `targetSessionId` | `string` | 否 | 新会话 id；省略时生成 `fusion-<uuid>`。 |
 | `title` | `string` | 否 | 新会话标题；省略时优先采用 Agent 建议，否则根据源会话标题生成。 |
 | `strategy` | `chronological \| by-source` | 否 | 默认 `chronological`。 |
-| `deduplicate` | `boolean` | 否 | 是否按稳定 message id 去重，默认 `true`。 |
+| `deduplicate` | `boolean` | 否 | 是否按稳定的回合或消息身份去重，默认 `true`。 |
 | `agentPlanning` | `boolean` | 否 | 是否使用临时 DSH Agent 判断、剪枝、分组和排布，默认 `false`。 |
 
 示例：
@@ -79,7 +79,7 @@ dsh plugin --profile web add /path/to/dsh-fusion
 }
 ```
 
-成功结果是结构化 JSON，包含新 `sessionId`、源数量、原始/保留/去重/省略/截断消息数、Agent 剪枝数、话题、规划理由、保留字节数、排序策略，以及 `durable`。`durable: false` 表示当前组合没有持久化监听器；会话仍在当前进程中可用。
+成功结果包含新 `sessionId`、来源数量、保留和去重统计，以及 `durable`。使用完整回合模式时，`retainedTurns` 是保留的回合数。`durable: false` 表示当前组合没有持久化监听器；会话仍在当前进程中可用。
 
 ## 服务 API
 
@@ -102,21 +102,30 @@ await ctx.conversationFusion.fuse({
 ## 融合语义
 
 1. 对每个唯一源 id 调用 `sessionQuery.readSession()`，从经过验证的完整日志原子折叠当前表层，因此压缩后被替换的旧节点不会重新进入新会话。
-2. 从 `user/message` 和 `assistant/message` 提取文本，并保留源 session id、seq 和时间。
-3. 默认把不同 fork 中相同 message id 的条目折叠成一条，同时在 `sourceSessionIds` 中保留全部来源。
-4. 按策略排序，再应用单消息字节上限、消息总数上限和完整 JSON 字节上限；超限时从最早条目开始省略，优先保留较新的上下文。
+2. 与 Shuttle 同装时提取完整 AHP 回合。独立安装时从 `user/message` 和 `assistant/message` 提取文本。两条路径都保留源会话 ID、序号和时间。
+3. 默认按历史身份去重，同时在 `sourceSessionIds` 中保留全部来源。
+4. 按策略排序，再应用条目数量和 UTF-8 字节上限。时间戳倒退时仍沿用源会话的表层顺序。达到上限时优先保留合并顺序靠后的上下文。
 5. 若启用智能规划，创建一个 `origin: subagent` 的临时 DSH Agent。它使用调用者的 provider/model、完整专用系统提示词和空工具白名单，只能返回 JSON 方案。插件验证 verdict、理由、策略、分组以及每个 `(sourceSessionId, sourceSeq)` 引用；`skip` 会停止创建，`fuse` 才应用剪枝和话题顺序。规划 Agent 随后被释放。
-6. 折叠源日志中最新的 `session/title` 自动生成可读标题；再为每条保留消息生成目标会话自己的原生 `user/message` / `assistant/message`，并用闭合的合成 turn/step 包围；同时写入不含正文副本的可忽略融合清单，保存来源引用、规划和保留统计。不会直接拼接源日志，因为各源的 seq、执行边界、工具引用和表层替换引用都属于不同 Session。
+6. 折叠源日志中最新的 `session/title` 自动生成可读标题；再将所选历史写成目标会话自己的原生事件，并用闭合的 turn/step 包围；同时写入不含正文副本的可忽略融合清单，保存来源引用、规划和保留统计。不会直接拼接源日志，因为各源的 seq、执行边界、工具引用和表层替换引用都属于不同 Session。
 7. 新会话发布后，若 Host 提供 Workspace 注册表，则优先继承调用者所在分组；调用者未直接列入分组时，继承同 cwd 源会话所在分组。融合内容仍是快照；源会话之后的新消息不会自动同步。
+
+Shuttle 与 Fusion 安装在同一个 DSH 配置时，Fusion 对完整 AHP 回合排序和去重，保留文本、推理以及成对的工具调用和结果。Shuttle 将所选回合写成新的原生事件并重映射引用。来源索引保留原消息身份和时间。单独安装 Fusion 时可合并 DSH 原生文本历史。合并外部历史时，先通过 Shuttle 导入到当前 DSH 工作区，再在 Fusion 中选择生成的会话。Codex、Claude Code、Pi、Reasonix 和 OpenCode 的原生历史也可以走这条路径。
+
+### 融合来自不同客户端的会话
+
+1. 在同一个 DSH profile 启用 Shuttle 和 Fusion。
+2. 用 Shuttle 将每个原生会话或 AHP 会话导入同一 DSH 工作区。用 AHP 导入时，`/shuttle` 默认选择当前工作区，CLI 可用 `--cwd` 指定工作区。[Shuttle 中文文档](https://github.com/omdsh-dev/dsh-shuttle/blob/main/README.zh.md)
+3. 打开一个已导入的会话，在标题栏点击 **融合对话** 并选择其他来源。也可以运行 `/fuse shuttle-pi-example`，将示例 ID 替换为另一个导入结果的会话 ID。当前会话会自动纳入。
+4. 新会话采用所选的合并顺序。完整回合模式会将工具调用和结果成对写入，并重映射引用。共享回合去重后，清单会记录其全部来源。
 
 ## 配置
 
 | 字段 | 默认值 | 说明 |
 |---|---:|---|
 | `maxSources` | `8` | 单次最多唯一源会话数；硬上限 32。 |
-| `maxMessages` | `500` | 字节预算前最多保留并原生物化的投影消息数。 |
-| `maxFusedBytes` | `131072` | 规划/来源快照 JSON 的 UTF-8 字节上限。 |
-| `maxMessageBytes` | `16384` | 单条投影消息的 UTF-8 字节上限，不得大于 `maxFusedBytes`。 |
+| `maxMessages` | `500` | 限制保留的完整回合数（与 Shuttle 同装），或投影消息数（独立安装）。 |
+| `maxFusedBytes` | `131072` | 规划快照和所选完整回合内容分别适用的 UTF-8 字节上限。 |
+| `maxMessageBytes` | `16384` | 单条回合预览或独立模式消息的 UTF-8 字节上限。 |
 | `maxTitleBytes` | `160` | 标题 UTF-8 字节上限。 |
 | `allowCrossWorkspace` | `false` | 是否允许源 cwd 与调用者不同。 |
 | `enableAgentPlanning` | `true` | 是否允许请求启动临时规划 Agent。 |
@@ -124,25 +133,16 @@ await ctx.conversationFusion.fuse({
 
 ## 开发
 
-本仓库可独立构建。开发链接和兼容范围现面向公开的 `deepseek-ai/deepseek-harness` `0.1.0-rc.5` API。`pnpm install` 后运行链接脚本，使测试使用本机的新 Harness 源码：
+本仓库可独立构建，开发与 Loader 测试使用已发布的 DSH `0.2.3-alpha.2` 包。
 
 ```sh
 pnpm install
-node scripts/link-harness.mjs
 pnpm run verify:self-contained
 pnpm run typecheck
 pnpm test
 pnpm run build
 pnpm run prepare
 pnpm pack --dry-run --json
-```
-
-链接脚本默认使用同级的 `deepseek-harness` 检出；若 Harness 位于其他目录，请设置 `DSH_REPO_ROOT`。新检出尚无 `lib/` 构建产物时，先执行：
-
-```sh
-cd /path/to/deepseek-harness
-pnpm install
-pnpm run build:lib
 ```
 
 ## Model Experience
@@ -169,7 +169,7 @@ pnpm run build:lib
 
 #### Token 影响
 
-只在新会话中产生，受 `maxMessages`、`maxMessageBytes` 和 `maxFusedBytes` 三重上限约束；后续每次请求都会重发这些原生历史消息，直到其他插件替换或压缩它们。
+融合历史只在新会话中产生。保留的完整回合受 `maxMessages` 和 `maxFusedBytes` 约束。后续请求会重发这些原生历史消息，直到其他插件替换或压缩它们。
 
 #### KV Cache 影响
 
@@ -206,7 +206,7 @@ pnpm run build:lib
 ## Known Limitations and Deferred Work
 
 - **快照而非持续同步** — 新会话只捕获工具调用时已提交的表层；源会话之后的更新不会传播。
-- **文本投影** — 图片、reasoning、tool call 和 tool result 不进入融合正文；需要跨会话保留这些模态时，必须先为附件和工具关联定义可移植投影。
+- 单独安装时融合文本。与 Shuttle 同装时保留推理和成对的工具调用及结果。
 - **单一工作目录** — 新会话继承调用者 cwd 及其对应的 Workspace 分组；即便显式允许跨工作区，也不会合并文件系统权限或加入外部 Workspace 分组。
 - **Workspace 服务可选** — 极简独立组合若没有 `workspaceRegistry`，仍能创建合法新会话，但该组合中没有可继承的分组。
 - **Agent preset 继承基于创建 header** — 若运行中的空白会话后来切换 preset，当前 out-of-tree 插件不会读取宿主私有的选择事件类型；融合会话使用 header 中的创建 preset。

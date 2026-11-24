@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
-import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { SESSION_FORMAT_VERSION, SessionId, validateSessionLog } from '@deepseek-ai/dsh-session'
 import type { SessionLogSnapshot } from '@deepseek-ai/dsh-session-query'
 import { foldSessionTitle } from '@deepseek-ai/dsh-session-title'
 import { defineTool, type GenericCallView, type ValueSchemaSpec } from '@deepseek-ai/dsh-tools'
@@ -18,6 +18,9 @@ import {
   buildFusedSnapshot,
   buildMergedSessionSeed,
   surfaceSnapshotFromLog,
+  type FusionHistoryWriter,
+  type FusionCompleteHistory,
+  type FusionCompleteHistoryWriter,
 } from './fusion.ts'
 import type {
   ConversationFusionExecution,
@@ -59,6 +62,7 @@ const RESULT_SCHEMA = {
     sourceCount: { type: 'integer', required: true },
     originalMessages: { type: 'integer', required: true },
     retainedMessages: { type: 'integer', required: true },
+    retainedTurns: { type: 'integer' },
     duplicateMessages: { type: 'integer', required: true },
     omittedMessages: { type: 'integer', required: true },
     truncatedMessages: { type: 'integer', required: true },
@@ -200,6 +204,12 @@ export class ConversationFusionService extends Service {
     execution.signal?.throwIfAborted()
     this.assertWorkspaceAccess(execution.caller, sourceLogs)
     const sources = sourceLogs.map(surfaceSnapshotFromLog)
+    const shuttle = this.ctx.get('shuttle') as Partial<FusionHistoryWriter & FusionCompleteHistoryWriter> | undefined
+    const complete: FusionCompleteHistory | undefined = typeof shuttle?.projectCompleteTurns === 'function'
+      && typeof shuttle.materializeCompleteTurns === 'function'
+      ? { sessionId: targetId, writer: shuttle as FusionCompleteHistoryWriter, sources: sourceLogs.map(log =>
+          shuttle.projectCompleteTurns!({ meta: log.session, events: log.events, inheritedEventCount: log.inheritedEventCount })) }
+      : undefined
 
     let snapshot = buildFusedSnapshot(sources, {
       strategy,
@@ -207,7 +217,10 @@ export class ConversationFusionService extends Service {
       maxMessages: this.config.maxMessages,
       maxMessageBytes: this.config.maxMessageBytes,
       maxFusedBytes: this.config.maxFusedBytes,
-    })
+    }, complete?.sources)
+    if (complete !== undefined && snapshot.conversation.length === 0) {
+      throw new Error('conversation-fusion: no completed turns fit within the fusion limits')
+    }
     const plan = agentPlanning
       ? await planFusionWithAgent(execution.caller, snapshot, {
         maxTokens: this.config.plannerMaxTokens,
@@ -222,7 +235,11 @@ export class ConversationFusionService extends Service {
     if (plan !== undefined) snapshot = applyAgentFusionPlan(snapshot, plan, this.config.maxFusedBytes)
     execution.signal?.throwIfAborted()
     const title = normalizeTitle(request.title ?? plan?.title ?? defaultTitle(sourceLogs), this.config.maxTitleBytes)
-    const seed: SessionEvent[] = buildMergedSessionSeed(snapshot, title, Date.now())
+    const createdAt = Date.now()
+    const writer = typeof shuttle?.materializeTextHistory === 'function'
+      ? { sessionId: targetId, service: shuttle as FusionHistoryWriter } : undefined
+    const seed = buildMergedSessionSeed(snapshot, title, createdAt, writer, complete)
+    validateSessionLog({ id: targetId, createdAt, version: SESSION_FORMAT_VERSION, isSeeded: false }, seed)
     const preset = await resolvePreset(this.ctx, execution.caller)
     execution.signal?.throwIfAborted()
     const handle = await this.ctx.agents.create({
@@ -232,7 +249,6 @@ export class ConversationFusionService extends Service {
         ...(execution.caller.session.header.cwd === undefined
           ? {}
           : { cwd: execution.caller.session.header.cwd }),
-        seedLength: seed.length,
         ...(preset.id === undefined ? {} : { agentPreset: preset.id }),
       },
       agentOptions: { ...execution.caller.options },
@@ -248,6 +264,7 @@ export class ConversationFusionService extends Service {
       sourceCount: sourceIds.length,
       originalMessages: snapshot.retention.originalMessages,
       retainedMessages: snapshot.retention.retainedMessages,
+      ...(complete === undefined ? {} : { retainedTurns: snapshot.retention.retainedMessages }),
       duplicateMessages: snapshot.retention.duplicateMessages,
       omittedMessages: snapshot.retention.omittedMessages,
       truncatedMessages: snapshot.retention.truncatedMessages,
@@ -293,7 +310,7 @@ async function executeFuseCommand(ctx: Context, invocation: CommandInvocation): 
       kind: 'success',
       text: `Created fused conversation ${result.sessionId} ("${result.title}") from ${result.sourceCount} conversations.`
         + (result.planningMode === 'agent'
-          ? ` Agent retained ${result.retainedMessages} messages in ${result.topics.length} topics and pruned ${result.agentPrunedMessages}. Reason: ${result.plannerReason ?? 'not supplied'}.`
+          ? ` Agent retained ${result.retainedMessages} ${result.retainedTurns === undefined ? 'messages' : 'turns'} in ${result.topics.length} topics and pruned ${result.agentPrunedMessages}. Reason: ${result.plannerReason ?? 'not supplied'}.`
           : '')
         + ' Open it from the conversation list.',
     }
@@ -464,8 +481,8 @@ async function flushCreated(ctx: Context, handle: AgentHandle): Promise<boolean>
 
 function renderResult(result: ConversationFusionResult): string {
   const retention = result.truncated
-    ? ` Retained ${result.retainedMessages}/${result.originalMessages} projected messages within ${result.retainedBytes} bytes.`
-    : ` Retained all ${result.retainedMessages} projected messages.`
+    ? ` Retained ${result.retainedMessages}/${result.originalMessages} ${result.retainedTurns === undefined ? 'projected messages' : 'complete turns'} within ${result.retainedBytes} bytes.`
+    : ` Retained all ${result.retainedMessages} ${result.retainedTurns === undefined ? 'projected messages' : 'complete turns'}.`
   const planning = result.planningMode === 'agent'
     ? ` Planning Agent pruned ${result.agentPrunedMessages} messages across ${result.topics.length} topics: ${result.plannerReason ?? 'no reason supplied'}.`
     : ''

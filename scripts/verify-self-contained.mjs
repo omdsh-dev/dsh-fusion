@@ -42,7 +42,7 @@ for (const path of files) {
   }
 }
 
-for (const required of ['package.json', 'cordis.patch.yml', 'README.md', 'README.zh.md', 'src/index.ts', 'src/invariant.ts']) {
+for (const required of ['package.json', 'cordis.patch.yml', 'README.md', 'README.zh.md', 'src/index.ts']) {
   if (!existsSync(join(root, required))) failures.push(`missing required file ${required}`)
 }
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))

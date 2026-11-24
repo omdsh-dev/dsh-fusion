@@ -1,8 +1,7 @@
 /** Pure browser projections and command encoding for the fusion dialog. */
 
-import type {
-  SessionId, SessionListState, SessionSummary,
-} from '@deepseek-ai/dsh-client-runtime/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
 
 /** Options submitted by the browser fusion dialog. */
 export interface FusionUiOptions {

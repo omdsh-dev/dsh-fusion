@@ -1,4 +1,5 @@
-import type { SessionId, SessionListState, SessionSummary } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
 import { describe, expect, it } from 'vitest'
 import {
   buildFuseCommand, createdSessionId, eligibleFusionSources,
@@ -15,6 +16,7 @@ function summary(value: string, overrides: Partial<SessionSummary> = {}): Sessio
     cwd: '/workspace',
     running: false,
     blank: false,
+    retainedBy: {},
     updatedAt: 1,
     ...overrides,
   }
@@ -24,11 +26,8 @@ function state(rows: readonly SessionSummary[]): SessionListState {
   return {
     ids: rows.map(row => row.id),
     byId: Object.fromEntries(rows.map(row => [row.id, row])) as SessionListState['byId'],
-    current: rows[0]?.id,
     phase: 'ready',
-    subagentsByParent: {},
-    jobsBySession: {},
-    currentAddress: undefined,
+    projectionsBySession: {},
   }
 }
 

@@ -1,7 +1,8 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
-import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import {
-  Button, IconLinkOutline16, IconSearchOutline16, Input, Modal,
+  Button, IconLinkOutlineRegular, IconSearchOutlineRegular, Input, Modal,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import {
@@ -70,7 +71,7 @@ const style = {
 export function FusionHeaderAction({
   sessionId, useSessions, execute, openSession, t,
 }: FusionHeaderActionProps): ReactNode {
-  const sessions = useSessions(snapshot => snapshot)
+  const sessions: SessionListState = useSessions((snapshot: SessionListState) => snapshot)
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<ReadonlySet<SessionId>>(() => new Set())
@@ -161,7 +162,7 @@ export function FusionHeaderAction({
       <Button
         variant="outline"
         size="sm"
-        icon={<IconLinkOutline16 size={14} />}
+        icon={<IconLinkOutlineRegular size={14} />}
         onClick={() => { reset(); setOpen(true) }}
       >
         {t('action.label')}
@@ -182,7 +183,7 @@ export function FusionHeaderAction({
                 <strong style={style.currentTitle}>{current?.displayTitle ?? sessionId}</strong>
               </div>
               <Input
-                icon={<IconSearchOutline16 size={14} />}
+                icon={<IconSearchOutlineRegular size={14} />}
                 value={query}
                 aria-label={t('dialog.search')}
                 placeholder={t('dialog.search')}

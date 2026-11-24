@@ -1,5 +1,5 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { SessionId, type SurfaceEvent } from '@deepseek-ai/dsh-session'
+import { SessionId, SessionLogOffset, SessionSeq, type SurfaceEvent } from '@deepseek-ai/dsh-session'
 import type { SessionSurfaceSnapshot } from '@deepseek-ai/dsh-session-query'
 import { describe, expect, it } from 'vitest'
 import { buildFusedSnapshot } from '../src/fusion.ts'
@@ -8,14 +8,15 @@ import { parseAgentFusionPlan, renderAgentPlanningRequest } from '../src/plannin
 function candidate(text = 'shared delivery topic') {
   const event: SurfaceEvent = {
     type: 'user/message',
-    seq: 0,
+    seq: SessionSeq(0),
     time: 1,
     data: createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] }),
     surfaceOp: 'append',
   }
   const source = (id: string): SessionSurfaceSnapshot => ({
-    session: { version: 0, id: SessionId(id), createdAt: 1, cwd: '/workspace' },
-    capturedThroughSeq: 0,
+    session: { version: 4, isSeeded: false, id: SessionId(id), createdAt: 1, cwd: '/workspace' },
+    inheritedEventCount: SessionLogOffset(0),
+    capturedThroughSeq: SessionSeq(0),
     events: [event],
   })
   return buildFusedSnapshot([source('one'), source('two')], {

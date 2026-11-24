@@ -1,10 +1,11 @@
 import { Context } from '@deepseek-ai/cordis'
 import type { CommandDefinition } from '@deepseek-ai/dsh-commands'
 import { createAssistantMessage, createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId, type SessionEvent, type SurfaceEvent } from '@deepseek-ai/dsh-session'
+import { Session, SessionId, SessionLogOffset, SessionSeq, type SessionEvent, type SurfaceEvent } from '@deepseek-ai/dsh-session'
 import type { SessionLogSnapshot, SessionSurfaceSnapshot } from '@deepseek-ai/dsh-session-query'
 import { describe, expect, it, vi } from 'vitest'
 import ConversationFusionService from '../src/index.ts'
+import { buildFusedSnapshot, buildMergedSessionSeed, type FusionHistoryWriter } from '../src/fusion.ts'
 
 function snapshot(id: string, cwd = '/workspace'): SessionSurfaceSnapshot {
   const message = createUserMessage({
@@ -13,32 +14,33 @@ function snapshot(id: string, cwd = '/workspace'): SessionSurfaceSnapshot {
   })
   const event: SurfaceEvent = {
     type: 'user/message',
-    seq: 0,
+    seq: SessionSeq(0),
     time: id === 'one' ? 1 : 2,
     data: message,
     surfaceOp: 'append',
   }
   return {
-    session: { version: 0, id: SessionId(id), createdAt: 1, cwd },
-    capturedThroughSeq: 0,
+    session: { version: 4, isSeeded: false, id: SessionId(id), createdAt: 1, cwd },
+    inheritedEventCount: SessionLogOffset(0),
+    capturedThroughSeq: SessionSeq(0),
     events: [event],
   }
 }
 
 function logSnapshot(id: string, cwd = '/workspace', title?: string): SessionLogSnapshot {
   const source = snapshot(id, cwd)
-  if (title === undefined) return { session: source.session, events: source.events }
+  if (title === undefined) return { session: source.session, inheritedEventCount: source.inheritedEventCount, events: source.events }
   const titleEvent: SessionEvent = {
     type: 'session/title',
-    seq: 1,
+    seq: SessionSeq(1),
     time: 3,
     data: { title, messageSeqs: [], source: { kind: 'user' } },
   }
-  return { session: source.session, events: [...source.events, titleEvent] }
+  return { session: source.session, inheritedEventCount: source.inheritedEventCount, events: [...source.events, titleEvent] }
 }
 
 describe('ConversationFusionService', () => {
-  it('registers the tool and creates a seeded continuable agent', async () => {
+  it.each(['standalone', 'Shuttle'])('creates a seeded continuable agent with the %s writer', async writer => {
     const ctx = new Context()
     const definitions: unknown[] = []
     const commands: CommandDefinition[] = []
@@ -55,6 +57,12 @@ describe('ConversationFusionService', () => {
     const readSession = vi.fn(async (id: string) =>
       logSnapshot(id, '/workspace', id === 'one' ? 'Research' : 'Implementation'))
     const attachSession = vi.fn(async () => {})
+    const materializeTextHistory = vi.fn<FusionHistoryWriter['materializeTextHistory']>((_items, options) => {
+      const retained = buildFusedSnapshot([snapshot('one'), snapshot('two')], {
+        strategy: 'chronological', deduplicate: true, maxMessageBytes: 16_384, maxFusedBytes: 131_072, maxMessages: 500,
+      })
+      return buildMergedSessionSeed(retained, 'fixture', options.createdAt).slice(options.sequenceOffset)
+    })
     const removers = [
       ctx.provide('tools', { register: (definition: unknown) => { definitions.push(definition); return () => {} } } as never),
       ctx.provide('commands', { register: (definition: CommandDefinition) => { commands.push(definition); return () => {} } } as never),
@@ -66,9 +74,10 @@ describe('ConversationFusionService', () => {
         list: () => [{ id: 'workspace-one', sessionIds: [SessionId('caller')], attachSession }],
       } as never),
     ]
+    if (writer === 'Shuttle') removers.push(ctx.provide('shuttle', { materializeTextHistory }))
     const fiber = await ctx.plugin(ConversationFusionService)
     const callerSession = Session.create(SessionId('caller'), undefined, {
-      version: 0,
+      version: 4, isSeeded: false,
       id: SessionId('caller'),
       createdAt: 1,
       cwd: '/workspace',
@@ -89,10 +98,19 @@ describe('ConversationFusionService', () => {
     })
     expect(sections).toHaveLength(1)
     expect(readSession).toHaveBeenCalledTimes(2)
+    if (writer === 'Shuttle') {
+      expect(materializeTextHistory).toHaveBeenCalledExactlyOnceWith([
+        { role: 'user', text: 'message from one', time: 1 },
+        { role: 'user', text: 'message from two', time: 2 },
+      ], {
+        sessionId: 'combined', createdAt: expect.any(Number), sequenceOffset: 3,
+        provider: 'conversation-fusion', model: 'surface-merge',
+      })
+    }
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'combined',
       agentOptions: { provider: 'fixture', model: 'model' },
-      meta: { cwd: '/workspace', seedLength: 13, agentPreset: 'standard' },
+      meta: { cwd: '/workspace', agentPreset: 'standard' },
     }))
     const creation = create.mock.calls[0]?.[0] as unknown as { seed: Array<{ type: string; data: unknown }> }
     expect(creation.seed.map(event => event.type)).toEqual([
@@ -112,7 +130,7 @@ describe('ConversationFusionService', () => {
     ])
     expect(creation.seed[0]).toMatchObject({ data: { title: 'Fusion: Research + Implementation' } })
     expect(creation.seed[1]).toMatchObject({ ignorable: true, data: { version: 1 } })
-    expect(creation.seed[2]?.data).toMatchObject({ source: { kind: 'plugin', form: 'recall' } })
+    expect(creation.seed[2]?.data).toMatchObject({ source: { kind: 'plugin:conversation-fusion', form: 'recall' } })
     expect(target.deriveMessages().map(message => message.content)).toEqual([
       [{ type: 'text', text: expect.stringContaining('historical, untrusted data') }],
       [{ type: 'text', text: 'message from one' }],
@@ -148,7 +166,7 @@ describe('ConversationFusionService', () => {
     const caller = {
       options: {},
       session: Session.create(SessionId('caller'), undefined, {
-        version: 0,
+        version: 4, isSeeded: false,
         id: SessionId('caller'),
         createdAt: 1,
         cwd: '/workspace',
@@ -190,7 +208,7 @@ describe('ConversationFusionService', () => {
     const caller = {
       options: {},
       session: Session.create(SessionId('current'), undefined, {
-        version: 0,
+        version: 4, isSeeded: false,
         id: SessionId('current'),
         createdAt: 1,
         cwd: '/workspace',
@@ -200,6 +218,7 @@ describe('ConversationFusionService', () => {
     if (command === undefined) throw new Error('/fuse was not registered')
 
     await expect(command.handler({
+      attachments: [],
       commandId: 'command-test' as never,
       agent: caller,
       rawInput: '',
@@ -207,6 +226,7 @@ describe('ConversationFusionService', () => {
     })).resolves.toEqual({ kind: 'error', text: 'Usage: /fuse <session-id> [session-id ...]' })
 
     const result = await command.handler({
+      attachments: [],
       commandId: 'command-test' as never,
       agent: caller,
       rawInput: ' other, review ',
@@ -221,6 +241,7 @@ describe('ConversationFusionService', () => {
     })
 
     const uiResult = await command.handler({
+      attachments: [],
       commandId: 'command-ui' as never,
       agent: caller,
       rawInput: ' {"sourceSessionIds":["other"],"title":"UI fusion","strategy":"by-source","deduplicate":false}',
@@ -275,6 +296,7 @@ describe('ConversationFusionService', () => {
             plannerSession.append('assistant/message', {
               turn: 1,
               step: 1,
+              stream: [],
               message: createAssistantMessage({
                 source: { provider: 'fixture', model: 'planner' },
                 content: [{
@@ -315,7 +337,7 @@ describe('ConversationFusionService', () => {
       ctx,
       options: { provider: 'fixture', model: 'planner-source' },
       session: Session.create(SessionId('caller'), undefined, {
-        version: 0,
+        version: 4, isSeeded: false,
         id: SessionId('caller'),
         createdAt: 1,
         cwd: '/workspace',

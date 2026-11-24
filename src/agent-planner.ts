@@ -3,6 +3,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { joinAssistantStreamText } from '@deepseek-ai/dsh-llm/assistant-stream'
 import { SessionId, type SessionEvent, type TurnEndReason } from '@deepseek-ai/dsh-session'
 import { parseAgentFusionPlan, PLANNER_SYSTEM_PROMPT, renderAgentPlanningRequest } from './planning.ts'
 import type { AgentFusionPlan, FusedConversationSnapshot, FusionStrategy } from './types.ts'
@@ -51,7 +52,7 @@ export async function planFusionWithAgent(
     await handle.agent.whenIdle()
     options.signal?.throwIfAborted()
     handle.agent.followup(createUserMessage({
-      source: { kind: 'plugin', plugin: 'conversation-fusion', form: 'recall' },
+      source: { kind: 'plugin:conversation-fusion', form: 'recall' },
       content: [{
         type: 'text',
         text: renderAgentPlanningRequest(snapshot, {
@@ -62,8 +63,9 @@ export async function planFusionWithAgent(
     }))
     await handle.agent.whenIdle()
     options.signal?.throwIfAborted()
-    const reason = finalTurnEndReason(handle.agent.session.events)
-    const output = plannerAssistantText(handle.agent.session.events, options.maxTokens)
+    const events = handle.agent.session.snapshotEvents()
+    const reason = finalTurnEndReason(events)
+    const output = plannerAssistantText(events, options.maxTokens)
     try {
       return parseAgentFusionPlan(output, snapshot.conversation.length)
     } catch (error) {
@@ -118,8 +120,8 @@ export function plannerAssistantText(events: readonly SessionEvent[], maxTokens:
   }
 
   const streamed = events.flatMap(event => (
-    event.type === 'assistant/chunk' && event.data.chunk.type === 'text-delta'
-      ? [event.data.chunk.text]
+    event.type === 'assistant/attempt' || event.type === 'assistant/message'
+      ? [joinAssistantStreamText(event.data.stream)]
       : []
   )).join('').trim()
   if (streamed !== '') return streamed

@@ -11,11 +11,11 @@ export const HARD_MAX_FUSED_BYTES = 4 * 1024 * 1024
 export interface Config {
   /** Maximum unique source conversations in one fusion. Defaults to 8. */
   maxSources?: number
-  /** Maximum projected messages materialized into the target surface/log. Defaults to 500. */
+  /** Maximum retained complete Shuttle turns or standalone projected messages, in the selected merge order. Defaults to 500. */
   maxMessages?: number
-  /** Maximum UTF-8 bytes in the bounded planning/provenance snapshot. Defaults to 131072. */
+  /** UTF-8 ceiling for both the planning snapshot and, independently, the selected complete-turn payloads. Defaults to 131072. */
   maxFusedBytes?: number
-  /** Maximum UTF-8 bytes retained from one projected message. Defaults to 16384. */
+  /** Maximum UTF-8 bytes for a turn preview or standalone message. Complete-turn history is retained whole. Defaults to 16384. */
   maxMessageBytes?: number
   /** Maximum UTF-8 bytes in the explicit, Agent-planned, or source-title-derived conversation title. Defaults to 160. */
   maxTitleBytes?: number

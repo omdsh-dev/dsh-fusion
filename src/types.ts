@@ -62,13 +62,14 @@ export interface FusedSourceRecord {
   readonly projectedMessages: number
 }
 
-/** One retained, text-only conversation item. */
+/** One retained planning item. Text is a projection of the selected history. */
 export interface FusedConversationItem {
   readonly role: 'user' | 'assistant'
   readonly text: string
   readonly sourceSessionIds: string[]
   readonly sourceSeq: number
   readonly sourceTime: number
+  readonly sourceRefs?: readonly AgentFusionItemRef[]
   /** Agent-selected topic heading when intelligent planning is enabled. */
   readonly topic?: string
   /** True when this item's text was byte-truncated before planning. */
@@ -78,6 +79,7 @@ export interface FusedConversationItem {
 /** Bounded planning/provenance snapshot used to select the target session surface. */
 export interface FusedConversationSnapshot {
   readonly version: 1
+  readonly granularity?: 'turn'
   readonly strategy: FusionStrategy
   readonly deduplicated: boolean
   readonly sources: FusedSourceRecord[]
@@ -108,6 +110,7 @@ export type MaterializedFusionItem = Omit<FusedConversationItem, 'text'>
 /** Ignorable log-only provenance for a natively materialized fused session. */
 export interface ConversationFusionManifest {
   readonly version: 1
+  readonly granularity?: 'turn'
   readonly strategy: FusionStrategy
   readonly deduplicated: boolean
   readonly sources: readonly FusedSourceRecord[]
@@ -131,6 +134,7 @@ export interface ConversationFusionResult {
   readonly sourceCount: number
   readonly originalMessages: number
   readonly retainedMessages: number
+  readonly retainedTurns?: number
   readonly duplicateMessages: number
   readonly omittedMessages: number
   readonly truncatedMessages: number

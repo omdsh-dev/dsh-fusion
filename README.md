@@ -9,7 +9,7 @@ A DeepSeek Harness bundle that fuses the current model surfaces of two or more s
 - Fuses 2–32 conversations; the deployment default limit is 8.
 - Orders projected messages chronologically or groups them by caller-selected source order.
 - Deduplicates shared fork prefixes by stable message id without collapsing coincidentally identical prose.
-- Projects text from user and assistant messages while excluding reasoning, tool calls, and tool results.
+- Keeps whole turns with Shuttle, including reasoning and paired tools. A standalone deployment fuses user and assistant text.
 - Inherits the caller's cwd, provider/model options, and creation-time agent preset.
 - Attaches the target to the caller/source Workspace group when the optional Host Workspace registry is available.
 - Uses an explicit title, then an Agent-planned title, then a readable title derived from the source conversation titles.
@@ -25,7 +25,7 @@ This repository is a DSH bundle with `cordis.patch.yml`:
 dsh plugin --profile web add /path/to/dsh-fusion
 ```
 
-Restart DSH after installation. The profile loads `@deepseek-ai/dsh-fusion`; the `/fuse` entry appears in the slash menu and `conversation_fuse` appears in the model tool catalog. The selected profile must provide `agents`, `commands`, `sessions`, `sessionQuery`, `systemPrompt`, and `tools`. Compositions that provide an `invariants` service may mount the optional `@deepseek-ai/dsh-fusion/invariant` entry separately; the default bundle does not enable it.
+Restart DSH after installation. The profile loads `@deepseek-ai/dsh-fusion`; the `/fuse` entry appears in the slash menu and `conversation_fuse` appears in the model tool catalog. The selected profile must provide `agents`, `commands`, `sessions`, `sessionQuery`, `systemPrompt`, and `tools`.
 
 ## UI command
 
@@ -55,10 +55,10 @@ The current conversation is included automatically, so the command accepts only 
 | `targetSessionId` | `string` | no | New id; defaults to `fusion-<uuid>`. |
 | `title` | `string` | no | New conversation title; defaults to the Agent suggestion or source conversation titles. |
 | `strategy` | `chronological \| by-source` | no | Defaults to `chronological`. |
-| `deduplicate` | `boolean` | no | Collapse shared stable message ids; defaults to `true`. |
+| `deduplicate` | `boolean` | no | Collapse shared history with the same stable turn or message identity; defaults to `true`. |
 | `agentPlanning` | `boolean` | no | Run the temporary DSH Agent judgement/pruning/grouping stage; defaults to `false`. |
 
-The canonical result includes the new id, source and retention counts, Agent-pruned count, topic headings, planning reason, retained bytes, strategy, and whether a persistence listener participated.
+The result includes the new id, source and retention counts, Agent-pruned count, topic headings, planning reason, retained bytes, strategy, and whether a persistence listener participated. In complete-turn mode, `retainedTurns` reports how many turns were kept.
 
 ## Service API
 
@@ -66,16 +66,26 @@ Other Host plugins can call `ctx.conversationFusion.fuse(request, { caller, sign
 
 ## Fusion semantics
 
-Each source is read atomically through `sessionQuery.readSession()` and its current surface is folded from the validated raw log, so shadowed pre-compaction nodes do not reappear. The plugin also folds the latest logged source titles for automatic naming. It projects text, deduplicates shared ids, applies the selected order, and retains newer entries within the configured message and UTF-8 byte budgets. With Agent planning enabled, it creates an `origin: subagent` temporary DSH Agent using the caller's provider/model, a complete planning-only system prompt, and an empty tool allowlist. The service strictly validates its verdict, prose bounds, strategy, groups, and every `(sourceSessionId, sourceSeq)` reference before pure code applies the plan. A `skip` verdict creates no target conversation. A valid `fuse` verdict materializes every retained item as an individual target-owned surface/log message inside a closed synthetic turn. Raw source logs are never concatenated because their seq, execution, tool, and replacement references belong to different sessions. After publication, the target is attached to the Workspace that directly contains the caller, or to a same-cwd source Workspace when the caller is not listed. Fusion is a point-in-time snapshot, not a live link.
+Each source is read atomically through `sessionQuery.readSession()` and its current surface is folded from the validated raw log, so shadowed pre-compaction nodes do not reappear. The plugin also folds the latest logged source titles for automatic naming. Fusion deduplicates shared history by identity. Chronological fusion interleaves sources by time while preserving each source's projected order, including when a source clock moves backwards. The by-source strategy keeps the caller's source order and each source's projected order. With Agent planning enabled, it creates an `origin: subagent` temporary DSH Agent using the caller's provider/model, a complete planning-only system prompt, and an empty tool allowlist. The service strictly validates its verdict, prose bounds, strategy, groups, and every `(sourceSessionId, sourceSeq)` reference before pure code applies the plan. A `skip` verdict creates no target conversation. A valid `fuse` verdict materializes the retained items as target-owned events inside closed turns. Raw source logs are never concatenated because their seq, execution, tool, and replacement references belong to different sessions. After publication, the target is attached to the Workspace that directly contains the caller, or to a same-cwd source Workspace when the caller is not listed. Fusion is a point-in-time snapshot, not a live link.
+
+When Shuttle is mounted in the same DSH profile, Fusion orders and deduplicates complete AHP turns. It keeps text, reasoning, and paired tool calls and results, then writes fresh native events with remapped references. The projector retains source identities and timestamps. Standalone Fusion supports native DSH text fusion. To combine external histories, import them with
+Shuttle into the current DSH workspace, then select the resulting sessions in Fusion. This includes native histories from Codex, Claude Code, Pi, Reasonix, and OpenCode that Shuttle converts through AHP.
+
+### Fuse conversations from different clients
+
+1. Enable Shuttle and Fusion in the same DSH profile.
+2. Import each native or AHP session into the same DSH workspace with Shuttle. For AHP imports, `/shuttle` uses the current workspace by default and the CLI accepts `--cwd`. [Shuttle documentation](https://github.com/omdsh-dev/dsh-shuttle/blob/main/README.md)
+3. Open one imported session and choose **Fuse conversations** to select the others. With the slash command, run `/fuse shuttle-pi-example` using the id of another imported session. The current session is included automatically.
+4. The new session follows the selected merge order. Complete-turn mode writes paired tool calls and results with target-owned references. A deduplicated turn retains references to all of its sources in the fusion manifest.
 
 ## Configuration
 
 | Field | Default | Meaning |
 |---|---:|---|
 | `maxSources` | `8` | Unique sources per call; hard limit 32. |
-| `maxMessages` | `500` | Projected messages retained and natively materialized before byte fitting. |
-| `maxFusedBytes` | `131072` | Bounded planning/provenance JSON UTF-8 byte limit. |
-| `maxMessageBytes` | `16384` | Per-message UTF-8 byte limit. |
+| `maxMessages` | `500` | Complete turns with Shuttle, or projected messages in standalone mode, kept before byte fitting. |
+| `maxFusedBytes` | `131072` | UTF-8 ceiling for the planning snapshot and, independently, the total selected complete-turn payload. |
+| `maxMessageBytes` | `16384` | UTF-8 limit for a turn preview or standalone message. |
 | `maxTitleBytes` | `160` | Title UTF-8 byte limit. |
 | `allowCrossWorkspace` | `false` | Permit source cwd values different from the caller. |
 | `enableAgentPlanning` | `true` | Permit requests to run a temporary planning Agent. |
@@ -85,7 +95,6 @@ Each source is read atomically through `sessionQuery.readSession()` and its curr
 
 ```sh
 pnpm install
-node scripts/link-harness.mjs
 pnpm run verify:self-contained
 pnpm run typecheck
 pnpm test
@@ -94,13 +103,7 @@ pnpm run prepare
 pnpm pack --dry-run --json
 ```
 
-The development links and compatibility range target the public `deepseek-ai/deepseek-harness` `0.1.0-rc.5` API. By default, the link script uses a sibling checkout named `deepseek-harness`; set `DSH_REPO_ROOT` when the checkout lives elsewhere. Build the Harness libraries first when that checkout has no `lib/` artifacts:
-
-```sh
-cd /path/to/deepseek-harness
-pnpm install
-pnpm run build:lib
-```
+Development and Loader tests use the published DSH `0.2.3-alpha.2` packages.
 
 ## Model Experience
 
@@ -122,7 +125,7 @@ The prefix stays stable while the plugin and schema are unchanged. Loading, unlo
 
 #### What the model sees
 
-The new conversation contains a short recall boundary followed by one native user/assistant surface event per retained source message. Its raw log also contains valid target-owned turn/step brackets and an ignorable provenance manifest with source references, planning facts, and retention statistics; transcript text is not duplicated into that manifest.
+The new conversation contains a short recall boundary followed by native target events for retained history. Its raw log also contains valid target-owned turn/step brackets and an ignorable provenance manifest with source references, planning facts, and retention statistics; transcript text is not duplicated into that manifest.
 
 #### Token effect
 
@@ -163,7 +166,7 @@ The temporary Agent does not reuse the initiating conversation prefix. Its stabl
 ## Known Limitations and Deferred Work
 
 - **Snapshot only** — later source updates do not propagate.
-- **Text projection** — images, reasoning, tool calls, and tool results are omitted pending portable attachment and tool-correlation projections.
+- **Attachments** — standalone fusion projects text. Shuttle applies its portable attachment policy when converting complete turns.
 - **One working directory** — the new session inherits the caller cwd and its matching Workspace membership; cross-workspace fusion does not merge filesystem authority or attach the target to foreign Workspace groups.
 - **Optional Workspace service** — minimal standalone compositions without `workspaceRegistry` still create a valid session, but no group exists to inherit there.
 - **Creation-header preset** — a blank session switched to another preset later is fused using its creation-time header preset.
